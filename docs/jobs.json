@@ -1,8 +1,12 @@
 {
-  "lastUpdated": null,
-  "lastAttempt": null,
+  "lastUpdated": "2026-10-30T16:14:43+00:00",
+  "lastAttempt": "2026-10-30T16:14:43+00:00",
   "stale": false,
-  "sources": [],
-  "fetchErrors": [],
+  "sources": [
+    "Arbeitnow"
+  ],
+  "fetchErrors": [
+    "Adzuna credentials not configured; Brisbane coverage may be sparse"
+  ],
   "jobs": []
 }
