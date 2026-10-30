@@ -39,11 +39,11 @@ def fetch_json(url):
         return json.load(response)
 
 def plain(value):
-    return re.sub(r"\\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", str(value or "")))).strip()
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", str(value or "")))).strip()
 
 def matching_region(location, country=""):
     text = (str(location or "") + " " + str(country or "")).lower()
-    if "bermuda" in text or re.search(r"\\bhamilton,?\\s*(bm|bermuda)\\b", text):
+    if "bermuda" in text or re.search(r"\bhamilton,?\s*(bm|bermuda)\b", text):
         return "Bermuda"
     if "brisbane" in text or "greater brisbane" in text:
         return "Brisbane"
