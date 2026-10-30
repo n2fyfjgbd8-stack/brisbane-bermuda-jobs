@@ -15,7 +15,7 @@ def s(x):
     if isinstance(x,dict): return str(x.get('name') or x.get('display_name') or x.get('title') or '')
     return str(x or '')
 def country_for(location,country):
-    value=(s(location)+' '+s(country)).lower()
+    value=s(location).lower()\n    country_hint=s(country).lower()
     # Require clear evidence of a location, not ambiguous "Hamilton" alone.
     if re.search(r'\bbermuda\b|\bhamilton,\s*bm\b',value):return 'Bermuda'
     if re.search(r'\bbrisbane\b|\bqueensland\b|\bqld\b',value):return 'Brisbane'
