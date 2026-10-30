@@ -1,117 +1,171 @@
 #!/usr/bin/env python3
-"""Free job-feed updater; all locations and direct links are validated."""
-import datetime, hashlib, html, json, os, pathlib, re, urllib.parse, urllib.request
-OUT=pathlib.Path(__file__).resolve().parents[1]/'docs'/'jobs.json'
-NOW=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds')
-TITLE_TERMS=('infrastructure','systems engineer','system engineer','systems administrator','system administrator','network engineer','cloud engineer','it engineer','azure engineer','desktop engineer','platform engineer','network administrator','it support engineer','ict support','technical support engineer','it operations')
-SENIOR_REJECT=('intern','graduate','apprentice','director','principal','head of','chief technology','vice president')
-NONPERM=('contract','temporary','freelance','casual','internship','part-time')
-UA='BrisbaneBermudaJobs/1.1 (public GitHub Pages job tracker)'
-def fetch(url):
-    req=urllib.request.Request(url,headers={'User-Agent':UA,'Accept':'application/json'})
-    with urllib.request.urlopen(req,timeout=25) as response:
+"""Fetch publicly indexed, currently active IT jobs for Brisbane and Bermuda.
+
+No paid dependencies, no scraping, no authentication required. Source attribution
+and verification metadata are retained. The site explicitly distinguishes
+historical leads and live-feed records.
+"""
+import datetime
+import hashlib
+import html
+import json
+import os
+import pathlib
+import re
+import urllib.parse
+import urllib.request
+
+OUT = pathlib.Path(__file__).resolve().parents[1] / "docs" / "jobs.json"
+NOW = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+TITLE_TERMS = (
+    "infrastructure", "systems engineer", "system engineer",
+    "systems administrator", "system administrator", "network engineer",
+    "network administrator", "cloud engineer", "azure engineer",
+    "it engineer", "it support engineer", "platform engineer",
+    "desktop engineer", "technical support engineer", "it administrator",
+    "it infrastructure", "it operations engineer", "site reliability engineer",
+)
+EXCLUDE_TITLES = ("intern", "internship", "graduate", "apprentice", "director", "head of", "chief ")
+jobs = {}
+errors = []
+sources = []
+
+def fetch_json(url):
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "BrisbaneBermudaPersonalJobSearch/1.1",
+        "Accept": "application/json",
+    })
+    with urllib.request.urlopen(request, timeout=22) as response:
         return json.load(response)
-def s(x):
-    if isinstance(x,dict): return str(x.get('name') or x.get('display_name') or x.get('title') or '')
-    return str(x or '')
-def country_for(location,country):
-    value=s(location).lower()\n    country_hint=s(country).lower()
-    # Require clear evidence of a location, not ambiguous "Hamilton" alone.
-    if re.search(r'\bbermuda\b|\bhamilton,\s*bm\b',value):return 'Bermuda'
-    if re.search(r'\bbrisbane\b|\bqueensland\b|\bqld\b',value):return 'Brisbane'
+
+def plain(value):
+    return re.sub(r"\\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", str(value or "")))).strip()
+
+def matching_region(location, country=""):
+    text = (str(location or "") + " " + str(country or "")).lower()
+    if "bermuda" in text or re.search(r"\\bhamilton,?\\s*(bm|bermuda)\\b", text):
+        return "Bermuda"
+    if "brisbane" in text or "greater brisbane" in text:
+        return "Brisbane"
     return None
-def valid_jobtype(type_):
-    t=s(type_).lower()
-    return not any(term in t for term in NONPERM)
-jobs={}; errors=[]; sources=[]
-def add(title,company,location,url,source,salary='',posted='',description='',country='',jobtype=''):
-    title=s(title).strip(); url=s(url).strip(); location=s(location).strip()
-    if not title or not url.startswith('https://'):return
-    lower=title.lower()
-    if not any(term in lower for term in TITLE_TERMS):return
-    if any(term in lower for term in SENIOR_REJECT):return
-    if not valid_jobtype(jobtype) or any(re.search(r'\b'+re.escape(t)+r'\b',lower) for t in NONPERM):return
-    region=country_for(location,country)
-    if not region:return
-    # Reject explicitly remote-anywhere postings (unless anchored to a named target location).
-    desc=html.unescape(re.sub(r'<[^>]*>',' ',s(description)))
-    unique=hashlib.sha256(url.encode()).hexdigest()[:16]
-    jobs[unique]={'id':unique,'title':title,'company':s(company) or 'Company not supplied',
-      'location':location or region,'country':region,'url':url,'source':source,
-      'salary':s(salary) or 'Not disclosed','posted':s(posted),
-      'employment':s(jobtype) or 'Permanent status unverified',
-      'visa':'Not confirmed','description':re.sub(r'\s+',' ',desc)[:350]}
-# Feed 1: Arbeitnow (public, no key; mainly European)
-try:
-    data=fetch('https://www.arbeitnow.com/api/job-board-api')
-    for x in data.get('data',[]):
-        if isinstance(x,dict):
-            add(x.get('title'),x.get('company_name'),x.get('location'),x.get('url'),'Arbeitnow',
-                posted=x.get('created_at'),description=x.get('description'),jobtype=x.get('job_type'))
-    sources.append('Arbeitnow')
-except Exception as e: errors.append('Arbeitnow: '+str(e)[:120])
-# Feed 2: Dev Global Jobs (free non-commercial API, country-searchable, attribution required)
-for code in ('au','bm'):
-    try:
-        url='https://devglobaljobs.com/api/v1/jobs?'+urllib.parse.urlencode({'limit':100,'country':code,'search':'engineer'})
-        data=fetch(url)
-        entries=data if isinstance(data,list) else (data.get('jobs') or data.get('data') or data.get('results') or [])
-        if isinstance(entries,dict):entries=entries.get('jobs') or entries.get('items') or []
-        for x in entries:
-            if not isinstance(x,dict):continue
-            loc=x.get('location') or x.get('city') or ''
-            if isinstance(loc,dict):loc=', '.join(str(v) for v in (loc.get('city'),loc.get('region'),loc.get('country')) if v)
-            add(x.get('title') or x.get('job_title'), x.get('organisation') or x.get('company') or x.get('company_name'),
-                loc,x.get('url') or x.get('job_url') or x.get('link'),'Dev Global Jobs',
-                salary=x.get('salary_text') or x.get('salary'),posted=x.get('posted_at') or x.get('created_at'),
-                description=x.get('description') or x.get('summary'),country=x.get('country') or ('Australia' if code=='au' else 'Bermuda'),
-                jobtype=x.get('employment_type'))
-        sources.append('Dev Global Jobs '+code.upper())
-    except Exception as e:errors.append('Dev Global Jobs '+code.upper()+': '+str(e)[:100])
-# Feed 3: OnJob (free to redistribute and link back; limited to first 2 paginated pages)
-for url in ('https://onjob.io/feeds/jobs.json','https://onjob.io/feeds/jobs/2.json'):
-    try:
-        data=fetch(url)
-        entries=data if isinstance(data,list) else data.get('jobs',[]) or data.get('items',[])
-        for x in entries:
-            if not isinstance(x,dict):continue
-            posting=x.get('jobPosting') or x.get('job_posting') or x.get('json_ld') or {}
-            if not isinstance(posting,dict):posting={}
-            loc=x.get('location') or x.get('jobLocation') or posting.get('jobLocation') or ''
-            if isinstance(loc,list):loc=', '.join(s(y) for y in loc)
-            if isinstance(loc,dict):
-                addr=loc.get('address',loc)
-                loc=', '.join(s(addr.get(k)) for k in ('addressLocality','addressRegion','addressCountry') if isinstance(addr,dict) and addr.get(k))
-            add(x.get('title') or posting.get('title'),x.get('company') or posting.get('hiringOrganization'),
-                loc,x.get('url') or posting.get('url'),'OnJob',description=x.get('description') or posting.get('description'),
-                posted=x.get('datePosted') or posting.get('datePosted'),jobtype=x.get('employmentType') or posting.get('employmentType'))
-        sources.append('OnJob')
-    except Exception as e: errors.append('OnJob: '+str(e)[:120])
-# Optional Adzuna Australia. Requires free developer credentials, held only in GitHub secrets.
-app=os.environ.get('ADZUNA_APP_ID');key=os.environ.get('ADZUNA_APP_KEY')
-if app and key:
-    for page in (1,2):
+
+def add(title, company, location, url, source, salary="", posted="",
+        description="", country="", employment="", verified="", attribution="", status="active"):
+    region = matching_region(location, country)
+    lower = plain(title).lower()
+    if not region or not any(term in lower for term in TITLE_TERMS):
+        return
+    if any(term in lower for term in EXCLUDE_TITLES):
+        return
+    jobtype = str(employment or "").lower()
+    if any(x in jobtype for x in ("contract", "temporary", "freelance", "internship")):
+        return
+    if not isinstance(url, str) or not url.startswith("https://"):
+        return
+    if str(status).lower() not in ("active", "open", "published"):
+        return
+    uid = hashlib.sha256(url.encode()).hexdigest()[:16]
+    jobs[uid] = {
+        "id": uid,
+        "title": plain(title),
+        "company": plain(company) or "Employer not specified",
+        "location": plain(location),
+        "country": region,
+        "url": url,
+        "source": source,
+        "salary": plain(salary) or "Not disclosed",
+        "posted": str(posted or ""),
+        "employment": plain(employment) or "Permanent status unconfirmed",
+        "verified": str(verified or ""),
+        "visa": "Not confirmed",
+        "attribution": plain(attribution) or source,
+        "description": plain(description)[:350],
+    }
+
+# PeopleSeek provides active job verification, location filtering and direct
+# application links. It is a public, no-key API (see developers/api).
+for region in ("Brisbane", "Bermuda"):
+    for term in ("infrastructure engineer", "systems engineer", "network engineer", "cloud engineer", "system administrator", "IT support engineer"):
+        params = {"q": term, "city": region if region == "Brisbane" else "",
+                  "country": "BM" if region == "Bermuda" else "AU",
+                  "limit": 50}
+        if not params["city"]:
+            del params["city"]
+        url = "https://jobs.peopleseek.ai/api/v1/jobs?" + urllib.parse.urlencode(params)
         try:
-            params={'app_id':app,'app_key':key,'results_per_page':50,'what':'IT infrastructure engineer','where':'Brisbane','content-type':'application/json','sort_by':'date'}
-            data=fetch('https://api.adzuna.com/v1/api/jobs/au/search/'+str(page)+'?'+urllib.parse.urlencode(params))
-            for x in data.get('results',[]):
-                low=x.get('salary_min'); high=x.get('salary_max')
-                salary=('AUD '+str(round(low))+'–'+str(round(high or low))) if low else ''
-                add(x.get('title'),x.get('company'),x.get('location'),x.get('redirect_url'),'Adzuna',
-                    salary=salary,posted=x.get('created'),description=x.get('description'),country='Australia',
-                    jobtype=x.get('contract_type'))
-            sources.append('Adzuna')
-        except Exception as e:errors.append('Adzuna: '+str(e)[:120])
-else: errors.append('Adzuna keys not set; Australian results may be limited')
-# Preserve last known data only if every source failed. Do not imply old data was freshly verified.
-previous={}
-if OUT.exists():
-    try: previous=json.loads(OUT.read_text(encoding='utf-8'))
-    except (OSError,ValueError):pass
-if not sources and previous.get('jobs'):
-    payload={**previous,'lastAttempt':NOW,'fetchErrors':errors,'stale':True}
+            payload = fetch_json(url)
+            if not payload.get("ok"):
+                raise ValueError(str(payload.get("error", "API declined query"))[:120])
+            for x in payload.get("data", {}).get("jobs", []):
+                if not isinstance(x, dict):
+                    continue
+                loc = x.get("location", {})
+                if isinstance(loc, dict):
+                    location = ", ".join(str(loc[k]) for k in ("city", "region", "country") if loc.get(k))
+                else:
+                    location = str(loc or "")
+                if not location:
+                    locations = x.get("locations", [])
+                    if isinstance(locations, list):
+                        location = ", ".join(str(i.get("city") or i.get("displayName") or "") for i in locations if isinstance(i, dict))
+                comp = x.get("company") or {}
+                src = x.get("source") or {}
+                ver = x.get("verification") or {}
+                pay = x.get("compensation") or {}
+                if not isinstance(comp, dict): comp = {"name": str(comp)}
+                if not isinstance(src, dict): src = {"name": str(src)}
+                if not isinstance(ver, dict): ver = {}
+                if not isinstance(pay, dict): pay = {}
+                money = x.get("salary") or pay.get("displayText") or pay.get("formatted")
+                add(x.get("title", ""), comp.get("name", ""),
+                    location, x.get("applyUrl") or x.get("canonicalUrl") or "",
+                    src.get("name") or "PeopleSeek",
+                    salary=money or "", posted=x.get("postedAt") or x.get("datePosted") or "",
+                    description=x.get("description") or x.get("summary") or "",
+                    country=region if region == "Bermuda" else "",
+                    employment=x.get("employmentType") or "",
+                    verified=ver.get("lastVerifiedAt") or "",
+                    attribution=src.get("attributionText") or src.get("name") or "PeopleSeek",
+                    status=ver.get("status") or "active")
+            sources.append("PeopleSeek")
+        except Exception as exc:
+            errors.append("PeopleSeek (" + region + ", " + term + "): " + str(exc)[:100])
+
+# Optional Adzuna Australian listings (free API credentials supplied by owner).
+app = os.environ.get("ADZUNA_APP_ID")
+key = os.environ.get("ADZUNA_APP_KEY")
+if app and key:
+    for term in ("infrastructure engineer", "systems engineer", "network engineer", "cloud engineer"):
+        try:
+            params = {"app_id": app, "app_key": key, "results_per_page": 50,
+                      "what": term, "where": "Brisbane", "content-type": "application/json",
+                      "sort_by": "date"}
+            url = "https://api.adzuna.com/v1/api/jobs/au/search/1?" + urllib.parse.urlencode(params)
+            response = fetch_json(url)
+            for x in response.get("results", []):
+                loc = (x.get("location") or {}).get("display_name", "")
+                sal = ("AUD " + str(round(x["salary_min"])) if x.get("salary_min") else "")
+                add(x.get("title", ""), (x.get("company") or {}).get("display_name", ""),
+                    loc, x.get("redirect_url", ""), "Adzuna", salary=sal,
+                    posted=x.get("created", ""), description=x.get("description", ""))
+            sources.append("Adzuna")
+        except Exception as exc:
+            errors.append("Adzuna (" + term + "): " + str(exc)[:120])
 else:
-    payload={'lastUpdated':NOW,'lastAttempt':NOW,'stale':False,'sources':sorted(set(sources)),
-      'fetchErrors':list(dict.fromkeys(errors)),'jobs':sorted(jobs.values(),key=lambda j:j.get('posted',''),reverse=True)}
-OUT.write_text(json.dumps(payload,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
-print('Fresh-source checks:',sources,'matching vacancies:',len(payload.get('jobs',[])),'errors:',errors)
+    errors.append("Optional Adzuna API credentials are not configured")
+
+previous = {}
+if OUT.exists():
+    try:
+        previous = json.loads(OUT.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+if not jobs and previous.get("jobs"):
+    # Never silently replace a populated feed with empty results following an outage.
+    payload = {**previous, "lastAttempt": NOW, "fetchErrors": errors, "stale": True}
+else:
+    payload = {"lastUpdated": NOW, "lastAttempt": NOW, "stale": False,
+               "sources": sorted(set(sources)), "fetchErrors": errors,
+               "jobs": sorted(jobs.values(), key=lambda x: x.get("posted", ""), reverse=True)}
+OUT.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+print("Job records:", len(payload["jobs"]), "Sources:", payload.get("sources"), "Errors:", len(errors))
